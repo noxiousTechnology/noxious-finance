@@ -92,6 +92,7 @@
   .card.expense .card-amount { color: var(--expense); }
   .panel-a1 .card.balance { border-color: var(--a1); box-shadow: 0 0 12px var(--a1-glow); }
   .panel-a2 .card.balance { border-color: var(--a2); box-shadow: 0 0 12px var(--a2-glow); }
+  .card.balance .card-label-sub { font-family: 'Space Mono', monospace; font-size: 0.48rem; color: var(--ink-dim); letter-spacing: 1px; margin-top: 2px; }
 
   /* ── Budget ── */
   .budget-section { background: var(--surface); border: 1px solid var(--border-bright); border-radius: 8px; overflow: hidden; }
@@ -123,6 +124,21 @@
   .cat-mini-fill { height: 100%; border-radius: 2px; background: var(--income); transition: width 0.3s; }
   .cat-mini-fill.warn { background: var(--warn); }
   .cat-mini-fill.over { background: var(--expense); }
+  .tx-date-input {
+    background: none; border: none; border-bottom: 1px solid var(--border-bright);
+    font-family: 'Space Mono', monospace; font-size: 0.58rem; color: var(--ink-muted);
+    outline: none; cursor: pointer; padding: 0; width: auto; transition: border-color 0.15s;
+    color-scheme: dark;
+  }
+  .tx-date-input:hover, .tx-date-input:focus { border-bottom-color: var(--accent); color: var(--ink); }
+  .form-date { width: 100%; margin-top: 0.4rem; }
+  .form-date input[type="date"] {
+    background: var(--bg2); border: 1px solid var(--border-bright); border-radius: 5px;
+    padding: 0.42rem 0.65rem; font-family: 'Space Grotesk', sans-serif; font-size: 0.8rem;
+    color: var(--ink); outline: none; width: 100%; transition: border-color 0.15s;
+    color-scheme: dark;
+  }
+  .form-date input[type="date"]:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
   .cat-budget-spent { font-family: 'Space Mono', monospace; font-size: 0.62rem; color: var(--ink-muted); white-space: nowrap; text-align: right; min-width: 70px; }
 
   /* ── Add form ── */
@@ -220,7 +236,7 @@
 <header class="global-header">
   <div class="logo">
     <span class="logo-noxious">noxious<span class="logo-dot">.</span></span><span class="logo-finance">finance</span>
-    <span class="logo-tag">beta</span>
+    <span class="logo-tag">beta v1.2</span>
   </div>
   <div class="month-nav">
     <button id="prevMonth">‹</button>
@@ -309,6 +325,7 @@ const uiState = {
 const txKey        = aid => `nox_tx_${aid}_${currentDate.getFullYear()}_${currentDate.getMonth()}`;
 const budgetKey    = aid => `nox_catbudget_${aid}`;
 const nameKey      = aid => `nox_name_${aid}`;
+const balanceKey   = aid => `nox_balance_${aid}`;
 const CATS_KEY     = 'nox_categories';
 
 const loadTx   = aid => { try { return JSON.parse(localStorage.getItem(txKey(aid))) || []; } catch { return []; } };
@@ -317,6 +334,32 @@ const loadCatBudgets = aid => { try { return JSON.parse(localStorage.getItem(bud
 const saveCatBudgets = (aid, d) => localStorage.setItem(budgetKey(aid), JSON.stringify(d));
 const loadName = aid => localStorage.getItem(nameKey(aid)) || ACCOUNTS[aid].defaultName;
 const saveName = (aid, n) => localStorage.setItem(nameKey(aid), n);
+
+// ─── Persistent (cumulative) balance ─────────────────────
+function loadBalance(aid) {
+  const raw = localStorage.getItem(balanceKey(aid));
+  return raw !== null ? parseFloat(raw) : null;
+}
+function saveBalance(aid, val) { localStorage.setItem(balanceKey(aid), val.toString()); }
+
+function computeBalanceFromAllMonths(aid) {
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k.startsWith('nox_tx_' + aid + '_')) continue;
+    try {
+      (JSON.parse(localStorage.getItem(k)) || []).forEach(t => {
+        if (t.type === 'income')                            total += t.amount;
+        if (t.type === 'expense' || t.type === 'transfer') total -= t.amount;
+      });
+    } catch {}
+  }
+  return total;
+}
+
+function migrateBalanceIfNeeded(aid) {
+  if (loadBalance(aid) === null) saveBalance(aid, computeBalanceFromAllMonths(aid));
+}
 
 function loadCats() {
   try { const c = JSON.parse(localStorage.getItem(CATS_KEY)); return Array.isArray(c) && c.length ? c : DEFAULT_CATS; }
@@ -406,7 +449,7 @@ function buildPanel(aid) {
     <div class="summary">
       <div class="card income"><div class="card-label">Recettes</div><div class="card-amount" id="income-${aid}">0,00 €</div></div>
       <div class="card expense"><div class="card-label">Dépenses</div><div class="card-amount" id="expense-${aid}">0,00 €</div></div>
-      <div class="card balance"><div class="card-label">Solde</div><div class="card-amount" id="balance-${aid}">0,00 €</div></div>
+      <div class="card balance"><div class="card-label">Solde réel</div><div class="card-amount" id="balance-${aid}">0,00 €</div><div class="card-label-sub" id="balance-sub-${aid}">cumul tous mois</div></div>
     </div>
 
     <div class="budget-section" id="budgetSection-${aid}">
@@ -454,6 +497,9 @@ function buildPanel(aid) {
       <div id="catWrap-${aid}">
         <select class="cat-select" id="txCat-${aid}">${catOptGroups}</select>
       </div>
+      <div class="form-date">
+        <input type="date" id="txDate-${aid}">
+      </div>
     </div>
 
     <div>
@@ -477,6 +523,10 @@ function buildPanel(aid) {
     const otherNotice = document.getElementById(`transferTarget-${aid === 0 ? 1 : 0}`);
     if (otherNotice) otherNotice.textContent = e.target.value.trim() || ACCOUNTS[aid].defaultName;
   });
+
+  // Default date = today
+  const todayStr = new Date().toISOString().slice(0, 10);
+  document.getElementById(`txDate-${aid}`).value = todayStr;
 
   // Enter to submit
   [`txLabel-${aid}`, `txAmount-${aid}`].forEach(id => {
@@ -570,7 +620,8 @@ function addTx(aid) {
 
   const cat = type === 'transfer' ? 'Virement' : document.getElementById(`txCat-${aid}`).value;
   const id  = Date.now();
-  const date = new Date().toISOString();
+  const dateInput = document.getElementById(`txDate-${aid}`).value;
+  const date = dateInput ? new Date(dateInput + 'T12:00:00').toISOString() : new Date().toISOString();
 
   if (type === 'transfer') {
     // Debit on this account
@@ -592,6 +643,19 @@ function addTx(aid) {
 
   document.getElementById(`txLabel-${aid}`).value  = '';
   document.getElementById(`txAmount-${aid}`).value = '';
+  document.getElementById(`txDate-${aid}`).value   = new Date().toISOString().slice(0, 10);
+
+  // Update cumulative balance
+  if (type === 'transfer') {
+    const dstAid2 = aid === 0 ? 1 : 0;
+    saveBalance(aid,     (loadBalance(aid)     ?? 0) - amount);
+    saveBalance(dstAid2, (loadBalance(dstAid2) ?? 0) + amount);
+  } else if (type === 'income') {
+    saveBalance(aid, (loadBalance(aid) ?? 0) + amount);
+  } else {
+    saveBalance(aid, (loadBalance(aid) ?? 0) - amount);
+  }
+
   renderAccount(aid);
   showToast(type === 'transfer' ? `⇄ Virement enregistré sur ${loadName(aid === 0 ? 1 : 0)}` : '✓ Opération ajoutée');
 }
@@ -603,9 +667,31 @@ function deleteTx(aid, id, transferId) {
   if (transferId !== undefined) {
     const otherAid = aid === 0 ? 1 : 0;
     saveTx(otherAid, loadTx(otherAid).filter(t => t.transferId !== transferId || t.id === transferId));
+    // Recompute both balances from scratch after transfer deletion
+    saveBalance(aid,      computeBalanceFromAllMonths(aid));
+    saveBalance(otherAid, computeBalanceFromAllMonths(otherAid));
     renderAccount(otherAid);
+  } else {
+    saveBalance(aid, computeBalanceFromAllMonths(aid));
   }
   renderAccount(aid);
+}
+
+// ─── Update transaction date ─────────────────────────────
+function updateTxDate(aid, id, newDateStr) {
+  if (!newDateStr) return;
+  const newDate = new Date(newDateStr + 'T12:00:00').toISOString();
+  const data = loadTx(aid).map(t => t.id === id ? { ...t, date: newDate } : t);
+  saveTx(aid, data);
+  // If it's a transfer, also update the paired entry on the other account
+  const tx = data.find(t => t.id === id);
+  if (tx && tx.transferId !== undefined) {
+    const otherAid = aid === 0 ? 1 : 0;
+    const otherData = loadTx(otherAid).map(t => t.transferId === tx.transferId ? { ...t, date: newDate } : t);
+    saveTx(otherAid, otherData);
+    renderTxList(otherAid);
+  }
+  showToast('✓ Date mise à jour');
 }
 
 // ─── Render account ───────────────────────────────────────
@@ -617,11 +703,13 @@ function renderAccount(aid) {
   // recalc properly
   const inc  = data.filter(t => t.type === 'income').reduce((s,t) => s+t.amount, 0);
   const exp  = data.filter(t => t.type === 'expense' || t.type === 'transfer').reduce((s,t) => s+t.amount, 0);
-  const bal  = inc - exp;
 
   document.getElementById(`income-${aid}`).textContent  = fmt(inc);
   document.getElementById(`expense-${aid}`).textContent = fmt(exp);
-  const balEl = document.getElementById(`balance-${aid}`);
+
+  // Cumulative balance across all months
+  const bal    = loadBalance(aid) ?? (inc - exp);
+  const balEl  = document.getElementById(`balance-${aid}`);
   balEl.textContent = fmt(bal);
   balEl.style.color = bal < 0 ? 'var(--expense)' : bal > 0 ? 'var(--income)' : 'var(--ink)';
 
@@ -698,13 +786,14 @@ function renderTxList(aid) {
     const isTransfer = t.type === 'transfer';
     const sign = t.type === 'income' ? '+' : '−';
     const amtClass = t.type === 'income' ? 'income' : isTransfer ? 'transfer' : 'expense';
-    const metaLabel = isTransfer ? `⇄ Virement · ${fmtDate(t.date)}` : `${t.cat} · ${fmtDate(t.date)}`;
-    const delArgs = isTransfer ? `${aid},${t.id},${t.transferId}` : `${aid},${t.id}`;
+    const dateVal  = t.date ? new Date(t.date).toISOString().slice(0,10) : '';
+    const catPart  = isTransfer ? '⇄ Virement' : t.cat;
+    const delArgs  = isTransfer ? `${aid},${t.id},${t.transferId}` : `${aid},${t.id}`;
     return `
       <div class="tx-item${isTransfer ? ' is-transfer' : ''}">
         <div>
           <div class="tx-label">${t.label}</div>
-          <div class="tx-meta">${metaLabel}</div>
+          <div class="tx-meta">${catPart} · <input class="tx-date-input" type="date" value="${dateVal}" onchange="updateTxDate(${aid},${t.id},this.value)" title="Modifier la date"></div>
         </div>
         <div class="tx-amount ${amtClass}">${sign} ${fmt(t.amount)}</div>
         <button class="tx-delete" onclick="deleteTx(${delArgs})" title="Supprimer">×</button>
@@ -745,14 +834,14 @@ function resetAll() {
 
 // ─── Export JSON ─────────────────────────────────────────
 function exportJSON() {
-  const backup = { version: 3, exportedAt: new Date().toISOString(), categories: loadCats(), accounts: [] };
+  const backup = { version: 4, exportedAt: new Date().toISOString(), categories: loadCats(), accounts: [] };
   ACCOUNTS.forEach(a => {
     const txEntries = {};
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (k.startsWith(`nox_tx_${a.id}_`)) txEntries[k] = JSON.parse(localStorage.getItem(k));
     }
-    backup.accounts.push({ id: a.id, name: loadName(a.id), catBudgets: loadCatBudgets(a.id), transactions: txEntries });
+    backup.accounts.push({ id: a.id, name: loadName(a.id), catBudgets: loadCatBudgets(a.id), balance: loadBalance(a.id), transactions: txEntries });
   });
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
@@ -795,10 +884,18 @@ function importJSON(event) {
       const backup = JSON.parse(e.target.result);
       if (!backup.accounts) throw new Error('invalid');
       if (backup.categories) saveCats(backup.categories);
+      const fallbackDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).toISOString();
       backup.accounts.forEach(a => {
-        if (a.name) saveName(a.id, a.name);
-        if (a.catBudgets) saveCatBudgets(a.id, a.catBudgets);
-        if (a.transactions) Object.entries(a.transactions).forEach(([k,v]) => localStorage.setItem(k, JSON.stringify(v)));
+        if (a.name)         saveName(a.id, a.name);
+        if (a.catBudgets)   saveCatBudgets(a.id, a.catBudgets);
+        if (a.transactions) Object.entries(a.transactions).forEach(([k,v]) => {
+          // Patch missing/invalid dates with first day of current month
+          const fixed = v.map(t => ({ ...t, date: t.date && !isNaN(Date.parse(t.date)) ? t.date : fallbackDate }));
+          localStorage.setItem(k, JSON.stringify(fixed));
+        });
+        // v4 has stored balance; v3 fallback: recompute from imported transactions
+        if (typeof a.balance === 'number') saveBalance(a.id, a.balance);
+        else saveBalance(a.id, computeBalanceFromAllMonths(a.id));
       });
       ACCOUNTS.forEach(a => buildPanel(a.id));
       renderAll();
@@ -810,6 +907,7 @@ function importJSON(event) {
 }
 
 // ─── Init ────────────────────────────────────────────────
+ACCOUNTS.forEach(a => migrateBalanceIfNeeded(a.id)); // silent migration for existing data
 ACCOUNTS.forEach(a => buildPanel(a.id));
 updateMonth();
 renderAll();
